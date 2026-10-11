@@ -11,9 +11,13 @@
 #include "collider.h"
 #include "controller.h"
 #include "mesh.h"
+#include "instanced.h"
 #include "texture.h"
 #include "map.h"
 #include <vector>
+#include <unordered_map>
+#include <algorithm>
+#include <random>
 
 #include <cstdio>
 #include <cstdlib>
@@ -49,6 +53,17 @@ static GLuint compile(GLenum type, const std::string& src) {
 
 struct Shader {
     GLuint id = 0;
+    mutable std::unordered_map<std::string, GLint> cache;
+
+    // Look up once, cache forever.
+    GLint loc(const char* n) const {
+        auto it = cache.find(n);
+        if (it != cache.end()) return it->second;
+        GLint l = glGetUniformLocation(id, n);
+        cache.emplace(n, l);
+        return l;
+    }
+
     Shader(const char* vsPath, const char* fsPath) {
         std::string vsrc = readFile(vsPath);
         GLuint vs = compile(GL_VERTEX_SHADER, vsrc);
@@ -66,12 +81,12 @@ struct Shader {
     }
     void use() const { glUseProgram(id); }
 
-    void set(const char* n, float v)              const { glUniform1f(glGetUniformLocation(id,n), v); }
-    void set(const char* n, int v)                const { glUniform1i(glGetUniformLocation(id,n), v); }
-    void set(const char* n, const glm::vec2& v)   const { glUniform2fv(glGetUniformLocation(id,n),1,glm::value_ptr(v)); }
-    void set(const char* n, const glm::vec3& v)   const { glUniform3fv(glGetUniformLocation(id,n),1,glm::value_ptr(v)); }
-    void set(const char* n, const glm::mat3& m)   const { glUniformMatrix3fv(glGetUniformLocation(id,n),1,GL_FALSE,glm::value_ptr(m)); }
-    void set(const char* n, const glm::mat4& m)   const { glUniformMatrix4fv(glGetUniformLocation(id,n),1,GL_FALSE,glm::value_ptr(m)); }
+    void set(const char* n, float v)              const { glUniform1f(loc(n), v); }
+    void set(const char* n, int v)                const { glUniform1i(loc(n), v); }
+    void set(const char* n, const glm::vec2& v)   const { glUniform2fv(loc(n),1,glm::value_ptr(v)); }
+    void set(const char* n, const glm::vec3& v)   const { glUniform3fv(loc(n),1,glm::value_ptr(v)); }
+    void set(const char* n, const glm::mat3& m)   const { glUniformMatrix3fv(loc(n),1,GL_FALSE,glm::value_ptr(m)); }
+    void set(const char* n, const glm::mat4& m)   const { glUniformMatrix4fv(loc(n),1,GL_FALSE,glm::value_ptr(m)); }
 };
 
 // ===============================================================
@@ -112,7 +127,7 @@ static Mesh makePlane(float size) {
         {{ h,0, h},{0,1,0},{1,1}},
         {{-h,0, h},{0,1,0},{0,1}},
     };
-    std::vector<uint32_t> i = {0,1,2, 0,2,3};
+    std::vector<uint32_t> i = {0,2,1, 0,3,2};
     return Mesh(v, i);
 }
 
@@ -210,7 +225,7 @@ int main() {
     // Render state
     glEnable(GL_DEPTH_TEST);
     // glEnable(GL_MULTISAMPLE);
-// glEnable(GL_CULL_FACE);
+glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
     glFrontFace(GL_CCW);
 
@@ -266,6 +281,56 @@ int main() {
         world.push_back(map.wallColliders[i]);
     }
 
+    // PROPS-BLOCK: scatter small objects across walkable cells.
+    {
+        std::mt19937 propRng(1337u ^ 0x9E3779B9u);   // deterministic per seed
+        std::uniform_real_distribution<float> chance(0.f, 1.f);
+        std::uniform_int_distribution<int>   kind(0, 2);
+        std::uniform_real_distribution<float> jitter(-0.15f, 0.15f);
+
+        int placed = 0;
+        for (int y = 0; y < map.H; ++y) {
+            for (int x = 0; x < map.W; ++x) {
+                if (!map.walkable(x, y)) continue;
+                if (chance(propRng) > 0.15f) continue;   // ~15% of open cells
+
+                glm::vec3 c = map.cellCenter(x, y);
+                // Skip the spawn cell so the player doesn't start inside a crate.
+                if (glm::distance(c, map.spawn) < 2.0f) continue;
+
+                // Jitter a bit so props don't sit perfectly on the grid.
+                c.x += jitter(propRng);
+                c.z += jitter(propRng);
+
+                glm::vec3 half, color;
+                switch (kind(propRng)) {
+                    case 0:  // crate
+                        half  = {0.35f, 0.35f, 0.35f};
+                        color = {0.62f, 0.42f, 0.24f};   // brown
+                        break;
+                    case 1:  // pillar
+                        half  = {0.25f, 1.00f, 0.25f};
+                        color = {0.55f, 0.52f, 0.48f};   // grey stone
+                        break;
+                    default: // barrel
+                        half  = {0.35f, 0.50f, 0.35f};
+                        color = {0.32f, 0.38f, 0.42f};   // blue-grey metal
+                        break;
+                }
+
+                glm::vec3 pos = c + glm::vec3(0, half.y, 0);   // sit on floor
+                glm::mat4 m = glm::translate(glm::mat4(1.f), pos)
+                            * glm::scale(glm::mat4(1.f), half * 2.f);
+                add(cube, m, color);
+
+                // Collider: unit-cube OBB, scaled to the same half-extents.
+                world.push_back(OBB::fromMatrix(m, glm::vec3(0.5f)));
+                ++placed;
+            }
+        }
+        std::cerr << "PROPS: placed " << placed << " objects\n";
+    }
+
     // Move player spawn to a guaranteed-open cell.
     player.pos = map.spawn;
 
@@ -289,6 +354,27 @@ int main() {
     }
 
     float last = (float)glfwGetTime();
+
+    // INSTANCED-SETUP: gather every cube-drawn instance into one buffer.
+    std::vector<glm::mat4> cubeModels;
+    std::vector<glm::vec3> cubeColors;
+    for (auto& inst : scene) {
+        if (inst.mesh == &cube) {
+            cubeModels.push_back(inst.model);
+            cubeColors.push_back(inst.color);
+        }
+    }
+    std::cerr << "INSTANCED: " << cubeModels.size() << " cube instances\n";
+
+    InstancedMesh instancedCube;
+    instancedCube.init(cube, cubeModels.size() + 16);
+
+    Shader instShader("shaders/lambert_instanced.vert",
+                      "shaders/lambert_instanced.frag");
+
+    // Remove cube instances from the per-frame list; they'll draw instanced.
+    scene.erase(std::remove_if(scene.begin(), scene.end(),
+        [&](const Instance& i){ return i.mesh == &cube; }), scene.end());
 
     while (!glfwWindowShouldClose(win)) {
         float now = (float)glfwGetTime();
@@ -358,6 +444,31 @@ int main() {
             inst.mesh->draw();
         }
 
+        // INSTANCED-DRAW: one draw call for all cubes.
+        {
+            instShader.use();
+            instShader.set("uView",       cam.view());
+            instShader.set("uProj",       proj);
+            instShader.set("uCameraPos",  cam.pos);
+            instShader.set("uLightDir",   lightDir);
+            instShader.set("uLightColor", glm::vec3(1.0f, 0.96f, 0.90f));
+            instShader.set("uAmbient",    glm::vec3(0.15f, 0.16f, 0.20f));
+            instShader.set("uUseTexture", 0);
+            instShader.set("uUVScale",    glm::vec2(1,1));
+            instancedCube.upload(cubeModels, cubeColors);
+            instancedCube.draw();
+        }
+
+        { // FPS-COUNT
+            static int frames = 0;
+            static double t0 = glfwGetTime();
+            frames++;
+            double now = glfwGetTime();
+            if (now - t0 >= 1.0) {
+                std::cerr << "FPS: " << (frames / (now - t0)) << "\n";
+                frames = 0; t0 = now;
+            }
+        }
         glfwSwapBuffers(win);
         glfwPollEvents();
     }
