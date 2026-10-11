@@ -12,6 +12,7 @@
 #include "controller.h"
 #include "mesh.h"
 #include "instanced.h"
+#include "shadowmap.h"
 #include "texture.h"
 #include "map.h"
 #include <vector>
@@ -376,6 +377,12 @@ glEnable(GL_CULL_FACE);
     scene.erase(std::remove_if(scene.begin(), scene.end(),
         [&](const Instance& i){ return i.mesh == &cube; }), scene.end());
 
+    // SHADOW-SETUP
+    ShadowMap shadow;
+    shadow.init(60.0f);
+    Shader depthInstShader ("shaders/depth_instanced.vert", "shaders/depth.frag");
+    Shader depthModelShader("shaders/depth_model.vert",     "shaders/depth.frag");
+
     while (!glfwWindowShouldClose(win)) {
         float now = (float)glfwGetTime();
         float dt = now - last; last = now;
@@ -410,7 +417,29 @@ glEnable(GL_CULL_FACE);
         float aspect = fbw > 0 ? (float)fbw / (float)fbh : 1.f;
         glm::mat4 proj = glm::perspective(glm::radians(70.f), aspect, 0.1f, 200.f);
 
+        // SHADOW-PASS: render depth from the light's POV.
+        shadow.bindForWriting();
+        {
+            depthInstShader.use();
+            depthInstShader.set("uLightSpace", shadow.matrix());
+            instancedCube.draw();
+
+            depthModelShader.use();
+            depthModelShader.set("uLightSpace", shadow.matrix());
+            for (auto& inst : scene) {
+                depthModelShader.set("uModel", inst.model);
+                inst.mesh->draw();
+            }
+        }
+        shadow.unbindForWriting();
+        glViewport(0, 0, fbw, fbh);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
         lambert.use();
+        lambert.set("uLightSpace",  shadow.matrix());
+        lambert.set("uShadowMap",   1);
+        lambert.set("uShadowTexel", 1.0f / (float)shadow.size);
+        shadow.bindForReading(1);
         lambert.set("uView",       cam.view());
         lambert.set("uProj",       proj);
         lambert.set("uCameraPos",  cam.pos);
@@ -455,6 +484,10 @@ glEnable(GL_CULL_FACE);
             instShader.set("uAmbient",    glm::vec3(0.15f, 0.16f, 0.20f));
             instShader.set("uUseTexture", 0);
             instShader.set("uUVScale",    glm::vec2(1,1));
+            instShader.set("uLightSpace",  shadow.matrix());
+            instShader.set("uShadowMap",   1);
+            instShader.set("uShadowTexel", 1.0f / (float)shadow.size);
+            shadow.bindForReading(1);
             instancedCube.upload(cubeModels, cubeColors);
             instancedCube.draw();
         }
