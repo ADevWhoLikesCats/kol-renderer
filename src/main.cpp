@@ -244,11 +244,11 @@ glEnable(GL_CULL_FACE);
     glm::vec3 lightDir = glm::normalize(glm::vec3(-0.4f, -1.0f, -0.3f));
 
     // Scene: list of (mesh, model, color)
-    struct Instance { const Mesh* mesh; glm::mat4 model; glm::vec3 color; const Texture* tex = nullptr; glm::vec2 uvScale{1,1}; };
+    struct Instance { const Mesh* mesh; glm::mat4 model; glm::vec3 color; const Texture* tex = nullptr; glm::vec2 uvScale{1,1}; float material = 0.f; };
     std::vector<Instance> scene;
     auto add = [&](const Mesh& m, glm::mat4 xf, glm::vec3 c, const Texture* t = nullptr,
-                   glm::vec2 uvs = {1,1}) {
-        scene.push_back({&m, xf, c, t, uvs});
+                   glm::vec2 uvs = {1,1}, float mat = 0.f) {
+        scene.push_back({&m, xf, c, t, uvs, mat});
     };
 
     std::vector<OBB> world;
@@ -259,6 +259,7 @@ glEnable(GL_CULL_FACE);
     // Floor: one big quad, tiled via uUVScale.
     float floorTiles = (float)map.W;   // one tile per world cell
     Texture floorTex("assets/ground.png");
+    Texture crateTex("assets/crate.png");
     add(floor,
         glm::translate(glm::mat4(1.f), glm::vec3(map.W*map.tile*0.5f, 0.f, map.H*map.tile*0.5f))
       * glm::scale(glm::mat4(1.f), glm::vec3(map.W*map.tile, 1.f, map.H*map.tile)),
@@ -304,10 +305,12 @@ glEnable(GL_CULL_FACE);
                 c.z += jitter(propRng);
 
                 glm::vec3 half, color;
+                float mat = 0.f;
                 switch (kind(propRng)) {
                     case 0:  // crate
                         half  = {0.35f, 0.35f, 0.35f};
-                        color = {0.62f, 0.42f, 0.24f};   // brown
+                        color = {0.62f, 0.42f, 0.24f};
+                        mat   = 1.f;   // use crate texture
                         break;
                     case 1:  // pillar
                         half  = {0.25f, 1.00f, 0.25f};
@@ -322,7 +325,7 @@ glEnable(GL_CULL_FACE);
                 glm::vec3 pos = c + glm::vec3(0, half.y, 0);   // sit on floor
                 glm::mat4 m = glm::translate(glm::mat4(1.f), pos)
                             * glm::scale(glm::mat4(1.f), half * 2.f);
-                add(cube, m, color);
+                add(cube, m, color, nullptr, glm::vec2(1,1), mat);
 
                 // Collider: unit-cube OBB, scaled to the same half-extents.
                 world.push_back(OBB::fromMatrix(m, glm::vec3(0.5f)));
@@ -359,10 +362,12 @@ glEnable(GL_CULL_FACE);
     // INSTANCED-SETUP: gather every cube-drawn instance into one buffer.
     std::vector<glm::mat4> cubeModels;
     std::vector<glm::vec3> cubeColors;
+    std::vector<float>     cubeMaterials;
     for (auto& inst : scene) {
         if (inst.mesh == &cube) {
             cubeModels.push_back(inst.model);
             cubeColors.push_back(inst.color);
+            cubeMaterials.push_back(inst.material);
         }
     }
     std::cerr << "INSTANCED: " << cubeModels.size() << " cube instances\n";
@@ -484,11 +489,13 @@ glEnable(GL_CULL_FACE);
             instShader.set("uAmbient",    glm::vec3(0.15f, 0.16f, 0.20f));
             instShader.set("uUseTexture", 0);
             instShader.set("uUVScale",    glm::vec2(1,1));
+            instShader.set("uCrateTex",   2);
+            if (crateTex.id) crateTex.bind(2);
             instShader.set("uLightSpace",  shadow.matrix());
             instShader.set("uShadowMap",   1);
             instShader.set("uShadowTexel", 1.0f / (float)shadow.size);
             shadow.bindForReading(1);
-            instancedCube.upload(cubeModels, cubeColors);
+            instancedCube.upload(cubeModels, cubeColors, cubeMaterials);
             instancedCube.draw();
         }
 

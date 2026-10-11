@@ -3,11 +3,13 @@ in vec3 vWorldPos;
 in vec3 vNormal;
 in vec2 vUV;
 in vec3 vColor;
+in float vMaterial;
 
 uniform vec3  uLightDir;
 uniform vec3  uLightColor;
 uniform vec3  uAmbient;
 uniform sampler2D uAlbedo;
+uniform sampler2D uCrateTex;
 uniform bool  uUseTexture;
 uniform vec2  uUVScale;
 
@@ -33,8 +35,13 @@ float shadowFactor(vec3 worldPos) {
 }
 
 void main() {
-    vec2 uv = vUV * uUVScale;
-    vec3 albedo = uUseTexture ? texture(uAlbedo, uv).rgb : vColor;
+    vec3 albedo;
+    if (vMaterial > 0.5) {
+        // Crate: sample the wood texture with cube-face UVs.
+        albedo = texture(uCrateTex, vUV).rgb;
+    } else {
+        albedo = vColor;
+    }
 
     vec3 N = normalize(vNormal);
     vec3 L = normalize(-uLightDir);
